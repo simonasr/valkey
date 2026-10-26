@@ -1688,7 +1688,7 @@ void clusterInitLast(void) {
 void clusterAutoFailoverOnShutdown(void) {
     if (!nodeIsPrimary(myself)) return;
 
-    /* Find the first best replica, that is, the replica with the largest offset. */
+    /* Find a fully synchronized replica that is allowed to fail over. */
     int legacy_replica = 0;
     client *best_replica = NULL;
     listIter replicas_iter;
@@ -1706,6 +1706,8 @@ void clusterAutoFailoverOnShutdown(void) {
         if (replica->repl_data->repl_state == REPLICA_STATE_ONLINE &&
             replica->repl_data->repl_ack_off == server.primary_repl_offset &&
             replica->repl_data->replica_nodeid && sdslen(replica->repl_data->replica_nodeid) == CLUSTER_NAMELEN) {
+            clusterNode *node = clusterLookupNode(replica->repl_data->replica_nodeid, CLUSTER_NAMELEN);
+            if (node == NULL || clusterNodeIsNoFailover(node)) continue;
             best_replica = replica;
         }
     }
@@ -8949,6 +8951,15 @@ int clusterCommandSpecial(client *c) {
         /* Check if it should be executed by myself. */
         if (replicaid != NULL && memcmp(objectGetVal(replicaid), myself->name, CLUSTER_NAMELEN) != 0) {
             /* Ignore this command, including the sanity check and the process. */
+            addReply(c, shared.ok);
+            return 1;
+        }
+
+        /* Failovers initiated by a shutting down primary must respect the local
+         * configuration even if the primary has not received our latest NOFAILOVER
+         * flag yet. Manual failovers requested by the user are still allowed. */
+        if (replicaid != NULL && server.cluster_replica_no_failover == CLUSTER_REPLICA_NO_FAILOVER_YES) {
+            serverLog(LL_NOTICE, "Ignoring shutdown failover request because cluster-replica-no-failover is set to yes.");
             addReply(c, shared.ok);
             return 1;
         }
